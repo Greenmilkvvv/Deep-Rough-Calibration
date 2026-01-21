@@ -113,7 +113,7 @@ from sklearn.preprocessing import StandardScaler
 x_train, x_test, y_train, y_test = train_test_split( 
     xx, yy, 
     test_size=0.15, 
-    random_state=2026
+    random_state=42
 )
 
 scale_x, scale_y = StandardScaler(), StandardScaler() 
@@ -202,9 +202,6 @@ model = NN_pricing(hyperparams).to(device=device, dtype=torch.float64)
 loss_MSE = nn.MSELoss()
 optim_Adam = torch.optim.Adam(model.parameters(), lr=0.0001)
 
-
-# %%
-# NN_pricing
 tain_loss_lst, test_loss_lst = train_model( 
     loss_MSE, 
     optim_Adam, 
@@ -218,6 +215,9 @@ tain_loss_lst, test_loss_lst = train_model(
 print(f"训练集损失: {tain_loss_lst[-1]}")
 print(f"测试集损失: {test_loss_lst[-1]}")
 
+torch.save(model.state_dict(), r"../Data/Models/nn_rBergomi.pth")
+
+print("模型已保存")
 
 # %%
 # NN_pricing_ResNet
@@ -238,4 +238,8 @@ tain_loss_lst, test_loss_lst = train_model(
 
 print(f"训练集损失: {tain_loss_lst[-1]}")
 print(f"测试集损失: {test_loss_lst[-1]}")
+
+torch.save(model.state_dict(), r"../Data/Models/nn_resnet_rBergomi.pth")
+
+print("模型已保存")
 

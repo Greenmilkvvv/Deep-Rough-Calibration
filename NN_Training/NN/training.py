@@ -53,7 +53,7 @@ def train_epoch(loss_function, optimizer, model, loader, train_data, test_data, 
 
     
     with torch.no_grad(): 
-        if test: 
+        if test==True: 
             train_loss = loss_function(model(train_data[0]), train_data[1])
             test_loss = loss_function(model(test_data[0]), test_data[1])
             print(f'Train Loss: {train_loss.item()}')
@@ -95,7 +95,7 @@ def train_model(loss_function, optimizer, model, loader, train_data, test_data, 
             test = test
         )
 
-        if test: 
+        if test==True: 
             # 把损失从 gpu detach 出来到 cpu 上
 
             train_loss_lst.append( 
