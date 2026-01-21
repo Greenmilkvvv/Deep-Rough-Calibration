@@ -93,18 +93,18 @@ class ResNet_Block(nn.Module):
             )
 
 
-        def forward(self, x): 
-            # 通过 MLP 前向通过
-            out = x 
-            for i in range(self.block_layer_nums): 
-                out = self.layers[i](out)
-                out = self.layernorms[i](out)
-                out = F.relu(out)
+    def forward(self, x): 
+        # 通过 MLP 前向通过
+        out = x 
+        for i in range(self.block_layer_nums): 
+            out = self.layers[i](out)
+            out = self.layernorms[i](out)
+            out = F.relu(out)
 
-            # 实现残差链接
-            out = out + x 
+        # 实现残差链接
+        out = out + x 
 
-            return out
+        return out
         
 
 # %%
@@ -144,7 +144,7 @@ class NN_pricing_ResNet(nn.Module):
 
         self.model = nn.Sequential(*self.layer_lst)
 
-        def forward(self, inputs): 
-            return self.model(inputs)
+    def forward(self, inputs): 
+        return self.model(inputs)
 
 

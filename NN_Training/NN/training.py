@@ -29,8 +29,13 @@ def train_epoch(loss_function, optimizer, model, loader, train_data, test_data, 
         # 前向传播
         y_pred = model.forward(x)
         # batch loss
+        # 在 loss.backward() 前添加验证
+        # print(f"y_pred device: {y_pred.device}, y device: {y.device}")
+        # print(f"y_pred shape: {y_pred.shape}, y shape: {y.shape}")
         loss = loss_function(y_pred, y)
         # 反向传播
+        # 在 backward() 前清理梯度
+        # optimizer.zero_grad(set_to_none=True)  # 使用 set_to_none=True 更彻底
         loss.backward()
         # 更新参数
         optimizer.step()
@@ -49,8 +54,8 @@ def train_epoch(loss_function, optimizer, model, loader, train_data, test_data, 
     
     with torch.no_grad(): 
         if test: 
-            train_loss = loss_function(model.forward(train_data[0]), train_data[1])
-            test_loss = loss_function(model.forward(test_data[0]), test_data[1])
+            train_loss = loss_function(model(train_data[0]), train_data[1])
+            test_loss = loss_function(model(test_data[0]), test_data[1])
             print(f'Train Loss: {train_loss.item()}')
             print(f'Test Loss: {test_loss.item()}')
 
@@ -61,7 +66,6 @@ def train_epoch(loss_function, optimizer, model, loader, train_data, test_data, 
 # %%
 def train_model(loss_function, optimizer, model, loader, train_data, test_data, epochs=25, test = True):
     """ 
-
     训练模型
 
     参数
@@ -93,8 +97,13 @@ def train_model(loss_function, optimizer, model, loader, train_data, test_data, 
 
         if test: 
             # 把损失从 gpu detach 出来到 cpu 上
-            train_loss_lst.append( train_loss.detach().cpu().numpy() )
-            test_loss_lst.append( test_loss.detach().cpu().numpy() )
+
+            train_loss_lst.append( 
+                train_loss.detach().cpu().item()
+            )
+            test_loss_lst.append( 
+                test_loss.detach().cpu().item()
+            )
 
             # 可视化
             plt.plot( 
@@ -107,11 +116,12 @@ def train_model(loss_function, optimizer, model, loader, train_data, test_data, 
                 test_loss_lst,
                 label = 'Test Loss'
             )
-
             plt.xlabel('Epoch')
             plt.ylabel('Mean Loss')
             plt.legend()
             plt.show()
 
-            return train_loss_lst, test_loss_lst
+    return train_loss_lst, test_loss_lst
 
+
+# %%
