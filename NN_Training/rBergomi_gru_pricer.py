@@ -4,11 +4,7 @@ import os
 import gzip
 import numpy as np
 
-import matplotlib.pyplot as plt
-
-plt.rcParams['font.sans-serif'] = ['SimSun']  # 用来正常显示中文宋体
-plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
-import matplotlib.ticker as mtick
+print('game is on')
 
 # %%
 # 加载数据
@@ -90,3 +86,56 @@ print(f"测试集形状：{x_test_transform.shape}")
 
 
 # %%
+import torch
+
+# 查找 GPU 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = torch.device(device)
+print(f"使用设备: {device}")
+
+
+# 确定训练数据
+train_dataset = torch.utils.data.TensorDataset( 
+    torch.from_numpy(x_train_transform).to(device=device),
+    torch.from_numpy(y_train_transform).to(device=device)
+)
+
+test_dataset = torch.utils.data.TensorDataset( 
+    torch.from_numpy(x_test_transform).to(device=device),
+    torch.from_numpy(y_test_transform).to(device=device)
+)
+
+
+train_data = (torch.from_numpy(x_train_transform).to(device=device),torch.from_numpy(y_train_transform).to(device=device))
+
+test_data = (torch.from_numpy(x_test_transform).to(device=device),torch.from_numpy(y_test_transform).to(device=device))
+
+
+data_loader = torch.utils.data.DataLoader( 
+    train_dataset, batch_size=32, shuffle=True
+)
+
+
+# %%
+import torch.nn as nn
+
+import sys
+sys.path.append(r"../") 
+
+from NN_Training.NN.nn import NN_pricing_GRU
+from NN_Training.NN.training import train_model
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+hyperparams = { 
+    "input_dim": 4,
+    'hidden_dim': 64, 
+    'hidden_nums': 10, 
+    'output_dim': 88
+}
+
+
+
+
+

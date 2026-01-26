@@ -157,7 +157,10 @@ class NN_pricing_LSTM(nn.Module):
             'input_dim':5, 
             'hidden_dim':30, 
             'hidden_nums':3, 
-            'output_dim':88
+            'output_dim':88, 
+            
+            'seq_len':8,
+            'feature_per_step':11
         }
         """
         super().__init__()
@@ -169,8 +172,8 @@ class NN_pricing_LSTM(nn.Module):
         self.output_dim = hyperparams['output_dim']
 
         # 序列相关的参数
-        self.seq_len = 8
-        self.feature_per_step = 11
+        self.seq_len = hyperparams['seq_len']
+        self.feature_per_step = hyperparams['feature_per_step']
 
 
         # MLP
@@ -266,7 +269,10 @@ class NN_pricing_GRU(nn.Module):
             'input_dim':5, 
             'hidden_dim':30, 
             'hidden_nums':3, 
-            'output_dim':88
+            'output_dim':88, 
+
+            'seq_len': 8,
+            'feature_per_step': 11
         }
         """
         super().__init__()
@@ -278,8 +284,8 @@ class NN_pricing_GRU(nn.Module):
         self.output_dim = hyperparams['output_dim']
 
         # 序列相关的参数
-        self.seq_len = 8
-        self.feature_per_step = 11
+        self.seq_len = hyperparams['seq_len']
+        self.feature_per_step = hyperparams['feature_per_step']
 
 
         # MLP
