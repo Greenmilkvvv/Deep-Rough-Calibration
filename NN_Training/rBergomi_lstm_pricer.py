@@ -122,7 +122,7 @@ import torch.nn as nn
 import sys
 sys.path.append(r"../") 
 
-from NN_Training.NN.nn import NN_pricing_GRU
+from NN_Training.NN.nn import NN_pricing_LSTM
 from NN_Training.NN.training import train_model
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -138,7 +138,7 @@ hyperparams = {
 }
 
 # NN
-model = NN_pricing_GRU(hyperparams).to(device=device, dtype=torch.float64)
+model = NN_pricing_LSTM(hyperparams).to(device=device, dtype=torch.float64)
 
 loss_MSE = nn.MSELoss()
 optim_Adam = torch.optim.Adam(model.parameters(), lr=0.0001)
@@ -156,9 +156,9 @@ tain_loss_lst, test_loss_lst = train_model(
 print(f"训练集损失: {tain_loss_lst[-1]}")
 print(f"测试集损失: {test_loss_lst[-1]}")
 
-torch.save(model.state_dict(), r"../Data/Models/nn_gru_rBergomi.pth")
+torch.save(model.state_dict(), r"../Data/Models/nn_lstm_rBergomi.pth")
 
 print("模型已保存")
 
 
-
+# %%
