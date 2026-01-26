@@ -221,3 +221,7 @@ def calibrate_with_torch_lbfgs(model, y_test_transform, device='cpu'):
 Approx, Timing = calibrate_with_torch_lbfgs(model, y_test_transform, device='cpu')
 
 
+# %%
+print(f"LBFGS 优化结果 (前 10 个): {Approx[:10]}")
+print(f"LBFGS 优化时间 (前 10 个): {Timing[:10]}")
+
