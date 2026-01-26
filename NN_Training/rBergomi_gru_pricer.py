@@ -6,6 +6,7 @@ import numpy as np
 
 print('game is on')
 
+
 # %%
 # 加载数据
 f = gzip.GzipFile( 
