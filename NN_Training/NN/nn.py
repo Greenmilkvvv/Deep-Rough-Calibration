@@ -111,7 +111,7 @@ class NN_pricing_ResNet(nn.Module):
     def __init__(self, hyperparams):
         """ 
         hyperparams = {
-            'input_dim':5,
+            'input_dim':4,
             'hidden_dim':64,
             'hidden_nums':10,
             'output_dim':88,
@@ -154,7 +154,7 @@ class NN_pricing_LSTM(nn.Module):
     def __init__(self, hyperparams):
         """
         hyperparams = {
-            'input_dim':5, 
+            'input_dim':4, 
             'hidden_dim':30, 
             'hidden_nums':3, 
             'output_dim':88, 
@@ -223,7 +223,7 @@ class NN_pricing_LSTM(nn.Module):
 
     def forward(self, x): 
         """
-        x: 输入参数，形状 [batch_size, input_dim=5]
+        x: 输入参数，形状 [batch_size, input_dim=4]
         返回: IV曲面, 形状 [batch_size, output_dim=88]
         """
         batch_size = x.size(0) 
@@ -266,7 +266,7 @@ class NN_pricing_GRU(nn.Module):
     def __init__(self, hyperparams):
         """
         hyperparams = {
-            'input_dim':5, 
+            'input_dim':4, 
             'hidden_dim':30, 
             'hidden_nums':3, 
             'output_dim':88, 
@@ -314,7 +314,7 @@ class NN_pricing_GRU(nn.Module):
         self.mlp_encoder = nn.Sequential(*self.layer_lst)
 
 
-        # LSTM decoder
+        # GRU decoder
         ## 输入: 每个时间步我们输入MLP提取的特征
         ## 输出: 每个时间步预测一个期限的11个IV值
         self.gru = nn.GRU( 
@@ -326,7 +326,7 @@ class NN_pricing_GRU(nn.Module):
         )
 
 
-        # LSTM 之后的全连接层: 将 LSTM 隐藏状态映射到每个期限的 11 个隐藏波动率
+        # GRU 之后的全连接层: 将 GRU 隐藏状态映射到每个期限的 11 个隐藏波动率
         self.fc_out = nn.Linear(64, self.feature_per_step)
 
         ### 如果担心初始输出范围不稳定 或许可以加入 Tanh 约束输出范围
@@ -357,8 +357,8 @@ class NN_pricing_GRU(nn.Module):
 
         # 4. 将每个时间步 (maturities) 的输出映射到11维 (strikes) IV值
         # 先 reshape 以便并行处理所有时间步
-        gru_out_flat = gru_out.reshape(-1, gru_out.size(-1))  # [batch*8, 64]
-        output_flat = self.fc_out(gru_out_flat)                 # [batch*8, 11]
+        gru_out_flat = gru_out.reshape(-1, gru_out.size(-1)) # [batch*8, 64]
+        output_flat = self.fc_out(gru_out_flat) # [batch*8, 11]
 
 
         # 5. 重塑为最终的曲面
