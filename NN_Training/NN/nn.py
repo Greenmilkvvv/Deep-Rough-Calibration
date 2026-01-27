@@ -153,14 +153,13 @@ class NN_pricing_ResNet(nn.Module):
 class NN_pricing_LSTM(nn.Module):
     def __init__(self, hyperparams):
         """
-        hyperparams = {
-            'input_dim':4, 
-            'hidden_dim':30, 
-            'hidden_nums':3, 
-            'output_dim':88, 
-            
-            'seq_len':8,
-            'feature_per_step':11
+        hyperparams = { 
+            "input_dim": 4,
+            'hidden_dim': 64, 
+            'hidden_nums': 10, 
+            'output_dim': 88, 
+            'seq_len': 8, 
+            'feature_per_step': 11
         }
         """
         super().__init__()
@@ -265,13 +264,12 @@ class NN_pricing_LSTM(nn.Module):
 class NN_pricing_GRU(nn.Module):
     def __init__(self, hyperparams):
         """
-        hyperparams = {
-            'input_dim':4, 
-            'hidden_dim':30, 
-            'hidden_nums':3, 
-            'output_dim':88, 
-
-            'seq_len': 8,
+        hyperparams = { 
+            "input_dim": 4,
+            'hidden_dim': 64, 
+            'hidden_nums': 10, 
+            'output_dim': 88, 
+            'seq_len': 8, 
             'feature_per_step': 11
         }
         """
@@ -335,7 +333,7 @@ class NN_pricing_GRU(nn.Module):
 
     def forward(self, x): 
         """
-        x: 输入参数，形状 [batch_size, input_dim=5]
+        x: 输入参数，形状 [batch_size, input_dim=4]
         返回: IV曲面, 形状 [batch_size, output_dim=88]
         """
         batch_size = x.size(0) 
