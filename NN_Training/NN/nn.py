@@ -134,7 +134,7 @@ class NN_pricing_ResNet(nn.Module):
             )
         )
 
-        for _ in range(self.hidden_nums-1):
+        for _ in range(self.hidden_nums):
             self.layer_lst.append( ResNet_Block(hyperparams) )
 
         self.layer_lst.append( 

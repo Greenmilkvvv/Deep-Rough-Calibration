@@ -120,7 +120,7 @@ data_loader = torch.utils.data.DataLoader(
 import sys
 sys.path.append(r"../") 
 
-from NN_Training.NN.nn import NN_pricing, NN_pricing_ResNet
+from NN_Training.NN.nn import NN_pricing_ResNet
 from NN_Training.NN.training import train_model
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -159,3 +159,5 @@ torch.save(model.state_dict(), r"../Data/Models/nn_resnet_rBergomi.pth")
 print("模型已保存")
 
 
+
+# %%

@@ -19,9 +19,8 @@ device = torch.device('cpu')
 hyperparams = { 
     'input_dim': 4, 
     'hidden_dim': 64, 
-    'hidden_nums': 10,
-    'output_dim': 88,
-    'block_layer_nums': 3
+    'hidden_nums': 4,
+    'output_dim': 88
 }
 
 model = NN_pricing(hyperparams=hyperparams).to(device=device, dtype=torch.float64)
