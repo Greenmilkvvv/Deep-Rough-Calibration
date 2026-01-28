@@ -132,7 +132,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 hyperparams = { 
     "input_dim": 4,
     'hidden_dim': 64, 
-    'hidden_nums': 10, 
+    'hidden_nums': 4, 
     'output_dim': 88, 
     'seq_len': 8, 
     'feature_per_step': 11
