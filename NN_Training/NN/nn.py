@@ -197,7 +197,7 @@ class NN_pricing_LSTM(nn.Module):
                 )
             )
 
-        # 注意：这里去掉了原MLP最后的输出层, 只保留到特征层
+        # 注意: 这里去掉了原MLP最后的输出层, 只保留到特征层
         self.mlp_encoder = nn.Sequential(*self.layer_lst)
 
 
@@ -252,7 +252,7 @@ class NN_pricing_LSTM(nn.Module):
         # output: [batch_size, 88] = [batch_size, 8*11]
         output = output_flat.reshape(batch_size, -1)
 
-        # 可选：应用激活函数约束输出范围 (如IV通常为正 )
+        # 可选: 应用激活函数约束输出范围 (如IV通常为正 )
         # output = self.activation(output)
         
         return output
@@ -308,7 +308,7 @@ class NN_pricing_GRU(nn.Module):
                 )
             )
 
-        # 注意：这里去掉了原MLP最后的输出层, 只保留到特征层
+        # 注意: 这里去掉了原MLP最后的输出层, 只保留到特征层
         self.mlp_encoder = nn.Sequential(*self.layer_lst)
 
 
@@ -363,7 +363,7 @@ class NN_pricing_GRU(nn.Module):
         # output: [batch_size, 88] = [batch_size, 8*11]
         output = output_flat.reshape(batch_size, -1)
 
-        # 可选：应用激活函数约束输出范围 (如IV通常为正 )
+        # 可选: 应用激活函数约束输出范围 (如IV通常为正 )
         # output = self.activation(output)
         
         return output
@@ -462,7 +462,7 @@ class NN_pricing_GNN(torch.nn.Module):
         # 2. GNN消息传递
         xs = []  # 存储每一层的节点表示
         for conv, bn in zip(self.convs, self.batch_norms):
-            x = conv(x, edge_index)  # PyG的核心：高效邻居聚合
+            x = conv(x, edge_index)  # PyG的核心: 高效邻居聚合
             x = bn(x)
             x = F.elu(x)
             if self.dropout:
@@ -482,4 +482,169 @@ class NN_pricing_GNN(torch.nn.Module):
         # 如果你的 batch 索引不为None, 这里返回的就是所有图的拼接结果
         return out.squeeze(-1)  # 从 [num_nodes, 1] -> [num_nodes]
 
+
+# %%
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class NN_pricing_CNN(nn.Module):
+    """
+    基于CNN的隐含波动率曲面定价器. 
+    将模型参数 (H, eta, rho, v0) 编码为条件向量, 通过卷积生成 IV 曲面图像 (8x11). 
+    """
+    def __init__(self, hyperparams):
+        """
+        hyperparams = {
+            'input_dim': 4,            # 模型参数维度 (H, eta, rho, v0)
+            'condition_dim': 32,       # 条件向量的维度
+            'conv_channels': [32, 64, 128], # 卷积层通道数列表
+            'conv_kernel_size': 3,     # 卷积核大小 (推荐 3 或 5)
+            'conv_padding': 1,         # 填充, 保持空间尺寸不变
+            'use_batch_norm': True,    # 是否使用批归一化
+            'dropout_rate': 0.0,       # Dropout 比率
+            'activation': 'ELU',       # 激活函数: 'ELU', 'ReLU', 'LeakyReLU'
+            'output_height': 8,        # 输出曲面高度 (期限数)
+            'output_width': 11         # 输出曲面宽度 (行权价数)
+        }
+        """
+        super().__init__()
+        
+        # 解析超参数
+        input_dim = hyperparams.get('input_dim', 4)
+        condition_dim = hyperparams.get('condition_dim', 32)
+        conv_channels = hyperparams.get('conv_channels', [32, 64, 128])
+        kernel_size = hyperparams.get('conv_kernel_size', 3)
+        padding = hyperparams.get('conv_padding', kernel_size // 2)
+        use_bn = hyperparams.get('use_batch_norm', True)
+        dropout_rate = hyperparams.get('dropout_rate', 0.0)
+        activation_name = hyperparams.get('activation', 'ELU')
+        self.output_height = hyperparams.get('output_height', 8)
+        self.output_width = hyperparams.get('output_width', 11)
+        
+        # ---  条件编码器 (将模型参数映射为条件向量) ---
+        self.condition_encoder = nn.Sequential(
+            nn.Linear(input_dim, condition_dim * 2),
+            self._get_activation(activation_name),
+            nn.Linear(condition_dim * 2, condition_dim)
+        )
+        
+        # ---  卷积生成器 (由条件向量生成初始特征图, 再逐步上采样) ---
+        # 初始全连接层: 将条件向量扩展为空间特征
+        self.init_fc = nn.Linear(condition_dim, conv_channels[0] * 4 * 4)
+        
+        # 构建转置卷积 (上采样) 层序列
+        self.deconv_layers = nn.ModuleList()
+        in_channels = conv_channels[0]
+        
+        # 计算所需的上采样倍数以达到目标尺寸 (8x11)
+        # 策略: 从 4x4 上采样到 8x11
+        scale_factors = [(2, 2), (2, 2)]  # 4x4 -> 8x8 -> 8x11 (最后通过裁剪或自适应池调整)
+        
+        for i, out_channels in enumerate(conv_channels):
+            deconv_block = []
+            # 添加转置卷积层 (上采样)
+            if i < len(scale_factors):
+                deconv_block.append(
+                    nn.ConvTranspose2d(in_channels, out_channels, 
+                                      kernel_size=3, 
+                                      stride=scale_factors[i], 
+                                      padding=1,
+                                      output_padding=(1, 1) if scale_factors[i] == (2,2) else 0)
+                )
+            else:
+                # 如果不需上采样, 使用普通卷积保持尺寸
+                deconv_block.append(
+                    nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+                )
+            
+            # 添加批归一化和激活函数
+            if use_bn:
+                deconv_block.append(nn.BatchNorm2d(out_channels))
+            
+            deconv_block.append(self._get_activation(activation_name))
+            
+            # 添加Dropout
+            if dropout_rate > 0:
+                deconv_block.append(nn.Dropout2d(dropout_rate))
+            
+            self.deconv_layers.append(nn.Sequential(*deconv_block))
+            in_channels = out_channels
+        
+        # ---  输出层 (将通道数映射为1, 得到单通道IV曲面) ---
+        # 先使用一个卷积层平滑特征
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            self._get_activation(activation_name),
+            nn.Conv2d(32, 1, kernel_size=1)  # 1x1卷积压缩到单通道
+        )
+        
+        # 如果最终尺寸不是精确的8x11, 使用自适应池或裁剪调整
+        self.size_adjust = nn.Identity()  # 先假设尺寸已正确
+        
+    def _get_activation(self, name):
+        """获取激活函数层"""
+        activations = {
+            'ELU': nn.ELU(),
+            'ReLU': nn.ReLU(),
+            'LeakyReLU': nn.LeakyReLU(0.2),
+            'Tanh': nn.Tanh()
+        }
+        return activations.get(name, nn.ELU())  # 默认ELU
+    
+    def forward(self, x):
+        """
+        前向传播. 
+        Args:
+            x: 输入张量, 形状为 [batch_size, input_dim] 
+               其中 input_dim = 4 (H, eta, rho, v0)
+        Returns:
+            隐含波动率曲面, 形状为 [batch_size, output_height, output_width] 
+            即 [batch_size, 8, 11]
+        """
+        batch_size = x.shape[0]
+        
+        # 1. 条件编码
+        condition = self.condition_encoder(x)  # [batch, condition_dim]
+        
+        # 2. 生成初始特征图
+        init_features = self.init_fc(condition)  # [batch, conv_channels[0]*4*4]
+        init_features = init_features.view(batch_size, -1, 4, 4)  # [batch, C, 4, 4]
+        
+        # 3. 通过转置卷积上采样
+        features = init_features
+        for deconv_layer in self.deconv_layers:
+            features = deconv_layer(features)
+        
+        # 4. 最终卷积得到IV曲面
+        output = self.final_conv(features)  # [batch, 1, H, W]
+        
+        # 5. 调整尺寸并移除通道维度
+        output = output.squeeze(1)  # [batch, H, W]
+        
+        # 6. 确保输出为精确的 [batch, 8, 11]
+        if output.shape[-2:] != (self.output_height, self.output_width):
+            output = F.interpolate(output.unsqueeze(1), 
+                                 size=(self.output_height, self.output_width), 
+                                 mode='bilinear', align_corners=False).squeeze(1)
+        
+        return output
+    
+    def predict_iv_surface(self, params_numpy):
+        """
+        实用方法: 从numpy参数输入预测IV曲面
+        Args:
+            params_numpy: numpy数组, 形状为 (4,) 或 (batch, 4)
+        Returns:
+            numpy数组, IV曲面形状为 (8, 11) 或 (batch, 8, 11)
+        """
+        self.eval()
+        with torch.no_grad():
+            if params_numpy.ndim == 1:
+                params_numpy = params_numpy.reshape(1, -1)
+            
+            params_tensor = torch.FloatTensor(params_numpy)
+            output = self.forward(params_tensor)
+            return output.numpy()
+        
 
