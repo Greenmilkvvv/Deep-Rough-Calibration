@@ -484,167 +484,128 @@ class NN_pricing_GNN(torch.nn.Module):
 
 
 # %%
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 class NN_pricing_CNN(nn.Module):
     """
     基于CNN的隐含波动率曲面定价器. 
-    将模型参数 (H, eta, rho, v0) 编码为条件向量, 通过卷积生成 IV 曲面图像 (8x11). 
+    输入: 模型参数 (H, η, rho, v0) [batch_size, 4]
+    输出: 展平的隐含波动率曲面 [batch_size, 88]
+    设计原则: 使用卷积层提取曲面空间特征, 通过最大池化下采样, 配合Dropout防止过拟合. 
     """
     def __init__(self, hyperparams):
         """
-        hyperparams = {
-            'input_dim': 4,            # 模型参数维度 (H, eta, rho, v0)
-            'condition_dim': 32,       # 条件向量的维度
-            'conv_channels': [32, 64, 128], # 卷积层通道数列表
-            'conv_kernel_size': 3,     # 卷积核大小 (推荐 3 或 5)
-            'conv_padding': 1,         # 填充, 保持空间尺寸不变
-            'use_batch_norm': True,    # 是否使用批归一化
-            'dropout_rate': 0.0,       # Dropout 比率
-            'activation': 'ELU',       # 激活函数: 'ELU', 'ReLU', 'LeakyReLU'
-            'output_height': 8,        # 输出曲面高度 (期限数)
-            'output_width': 11         # 输出曲面宽度 (行权价数)
-        }
+        Args:
+            hyperparams (dict): 包含模型超参数的字典. 
+                必需键: 'input_dim' (应固定为4)
+                可选键 (带默认值) :
+                    - 'init_channels': 第一层卷积核数, 默认 32
+                    - 'dense_units': 全连接层单元数, 默认 128
+                    - 'dropout_rates': Dropout率列表, 默认 [0.25, 0.25, 0.4, 0.3]
+                    - 'conv_kernel_size': 卷积核尺寸, 默认 3
+                    - 'pool_kernel_size': 池化核尺寸, 默认 2
         """
         super().__init__()
         
-        # 解析超参数
-        input_dim = hyperparams.get('input_dim', 4)
-        condition_dim = hyperparams.get('condition_dim', 32)
-        conv_channels = hyperparams.get('conv_channels', [32, 64, 128])
-        kernel_size = hyperparams.get('conv_kernel_size', 3)
-        padding = hyperparams.get('conv_padding', kernel_size // 2)
-        use_bn = hyperparams.get('use_batch_norm', True)
-        dropout_rate = hyperparams.get('dropout_rate', 0.0)
-        activation_name = hyperparams.get('activation', 'ELU')
-        self.output_height = hyperparams.get('output_height', 8)
-        self.output_width = hyperparams.get('output_width', 11)
+        # 解析超参数, 设置默认值
+        self.input_dim = hyperparams.get('input_dim', 4)
+        init_channels = hyperparams.get('init_channels', 32)
+        dense_units = hyperparams.get('dense_units', 128)
+        dropout_rates = hyperparams.get('dropout_rates', [0.25, 0.25, 0.4, 0.3])
+        conv_kernel_size = hyperparams.get('conv_kernel_size', 3)
+        pool_kernel_size = hyperparams.get('pool_kernel_size', 2)
         
-        # ---  条件编码器 (将模型参数映射为条件向量) ---
-        self.condition_encoder = nn.Sequential(
-            nn.Linear(input_dim, condition_dim * 2),
-            self._get_activation(activation_name),
-            nn.Linear(condition_dim * 2, condition_dim)
+        # 输入校验
+        assert self.input_dim == 4, f"输入维度应为4 (H, η, rho, v0) , 但传入 {self.input_dim}"
+        assert len(dropout_rates) == 4, "dropout_rates 应包含4个值 (对应3个卷积后和1个全连接后的Dropout) "
+        
+        # --- 特征投影与图像重塑 ---
+        # 将4维参数投影到更高维, 然后重塑为伪图像, 模拟曲面网格
+        # 投影维度需能被重塑后的高度整除, 这里选择投影到 8*11 = 88 维
+        self.projection = nn.Sequential(
+            nn.Linear(self.input_dim, 64),
+            nn.ELU(),
+            nn.Linear(64, 88)  # 投影到与输出曲面相同的总点数
         )
         
-        # ---  卷积生成器 (由条件向量生成初始特征图, 再逐步上采样) ---
-        # 初始全连接层: 将条件向量扩展为空间特征
-        self.init_fc = nn.Linear(condition_dim, conv_channels[0] * 4 * 4)
+        # --- CNN 编码器部分 ---
+        # 卷积块1: 输入通道=1 (灰度图), 输出通道=init_channels
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=init_channels,
+                               kernel_size=conv_kernel_size, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=pool_kernel_size)
+        self.drop1 = nn.Dropout2d(p=dropout_rates[0])
         
-        # 构建转置卷积 (上采样) 层序列
-        self.deconv_layers = nn.ModuleList()
-        in_channels = conv_channels[0]
+        # 卷积块2: 通道数翻倍
+        self.conv2 = nn.Conv2d(in_channels=init_channels, out_channels=init_channels*2,
+                               kernel_size=conv_kernel_size, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=pool_kernel_size)
+        self.drop2 = nn.Dropout2d(p=dropout_rates[1])
         
-        # 计算所需的上采样倍数以达到目标尺寸 (8x11)
-        # 策略: 从 4x4 上采样到 8x11
-        scale_factors = [(2, 2), (2, 2)]  # 4x4 -> 8x8 -> 8x11 (最后通过裁剪或自适应池调整)
+        # 卷积块3: 通道数再翻倍
+        self.conv3 = nn.Conv2d(in_channels=init_channels*2, out_channels=init_channels*4,
+                               kernel_size=conv_kernel_size, padding=1)
+        self.pool3 = nn.MaxPool2d(kernel_size=pool_kernel_size)
+        self.drop3 = nn.Dropout2d(p=dropout_rates[2])
         
-        for i, out_channels in enumerate(conv_channels):
-            deconv_block = []
-            # 添加转置卷积层 (上采样)
-            if i < len(scale_factors):
-                deconv_block.append(
-                    nn.ConvTranspose2d(in_channels, out_channels, 
-                                      kernel_size=3, 
-                                      stride=scale_factors[i], 
-                                      padding=1,
-                                      output_padding=(1, 1) if scale_factors[i] == (2,2) else 0)
-                )
-            else:
-                # 如果不需上采样, 使用普通卷积保持尺寸
-                deconv_block.append(
-                    nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-                )
-            
-            # 添加批归一化和激活函数
-            if use_bn:
-                deconv_block.append(nn.BatchNorm2d(out_channels))
-            
-            deconv_block.append(self._get_activation(activation_name))
-            
-            # 添加Dropout
-            if dropout_rate > 0:
-                deconv_block.append(nn.Dropout2d(dropout_rate))
-            
-            self.deconv_layers.append(nn.Sequential(*deconv_block))
-            in_channels = out_channels
+        # --- 全连接解码器部分 ---
+        # 计算卷积层展平后的特征维度
+        # 假设输入“图像”大小为 8x11 (高x宽)
+        def get_flatten_size(h, w):
+            # 经过3次 kernel_size=2 的池化
+            h = h // (pool_kernel_size ** 3)
+            w = w // (pool_kernel_size ** 3)
+            # 确保尺寸为正
+            return max(1, h), max(1, w)
         
-        # ---  输出层 (将通道数映射为1, 得到单通道IV曲面) ---
-        # 先使用一个卷积层平滑特征
-        self.final_conv = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
-            self._get_activation(activation_name),
-            nn.Conv2d(32, 1, kernel_size=1)  # 1x1卷积压缩到单通道
-        )
+        # 确定展平后的维度
+        final_h, final_w = get_flatten_size(8, 11)
+        flatten_dim = init_channels * 4 * final_h * final_w
         
-        # 如果最终尺寸不是精确的8x11, 使用自适应池或裁剪调整
-        self.size_adjust = nn.Identity()  # 先假设尺寸已正确
+        self.fc1 = nn.Linear(flatten_dim, dense_units)
+        self.drop_fc = nn.Dropout(p=dropout_rates[3])
+        # 输出层: 映射回88个曲面点
+        self.fc_out = nn.Linear(dense_units, 88)
         
-    def _get_activation(self, name):
-        """获取激活函数层"""
-        activations = {
-            'ELU': nn.ELU(),
-            'ReLU': nn.ReLU(),
-            'LeakyReLU': nn.LeakyReLU(0.2),
-            'Tanh': nn.Tanh()
-        }
-        return activations.get(name, nn.ELU())  # 默认ELU
-    
+        # 记录中间值, 便于调试
+        self.flatten_dim = flatten_dim
+        self.final_h, self.final_w = final_h, final_w
+
     def forward(self, x):
         """
         前向传播. 
         Args:
-            x: 输入张量, 形状为 [batch_size, input_dim] 
-               其中 input_dim = 4 (H, eta, rho, v0)
+            x: 输入张量, 形状为 [batch_size, 4], 包含模型参数. 
         Returns:
-            隐含波动率曲面, 形状为 [batch_size, output_height, output_width] 
-            即 [batch_size, 8, 11]
+            输出张量, 形状为 [batch_size, 88], 即预测的隐含波动率曲面. 
         """
-        batch_size = x.shape[0]
+        batch_size = x.size(0)
         
-        # 1. 条件编码
-        condition = self.condition_encoder(x)  # [batch, condition_dim]
+        # 1. 投影与重塑: 参数 -> 伪图像
+        x = self.projection(x)  # [batch, 88]
+        # 重塑为图像格式: [batch, channels=1, height=8, width=11]
+        x = x.view(batch_size, 1, 8, 11)
         
-        # 2. 生成初始特征图
-        init_features = self.init_fc(condition)  # [batch, conv_channels[0]*4*4]
-        init_features = init_features.view(batch_size, -1, 4, 4)  # [batch, C, 4, 4]
+        # 2. 卷积编码路径
+        x = F.elu(self.conv1(x))
+        x = self.pool1(x)
+        x = self.drop1(x)
         
-        # 3. 通过转置卷积上采样
-        features = init_features
-        for deconv_layer in self.deconv_layers:
-            features = deconv_layer(features)
+        x = F.elu(self.conv2(x))
+        x = self.pool2(x)
+        x = self.drop2(x)
         
-        # 4. 最终卷积得到IV曲面
-        output = self.final_conv(features)  # [batch, 1, H, W]
+        x = F.elu(self.conv3(x))
+        x = self.pool3(x)
+        x = self.drop3(x)
         
-        # 5. 调整尺寸并移除通道维度
-        output = output.squeeze(1)  # [batch, H, W]
+        # 3. 展平并全连接解码
+        x = x.view(batch_size, -1)  # 自动展平
+        # 可选: 添加一个维度校验 (训练时建议注释掉以提升速度) 
+        # if x.size(1) != self.flatten_dim:
+        #     raise ValueError(f"展平维度不匹配: 预期 {self.flatten_dim}, 实际 {x.size(1)}")
         
-        # 6. 确保输出为精确的 [batch, 8, 11]
-        if output.shape[-2:] != (self.output_height, self.output_width):
-            output = F.interpolate(output.unsqueeze(1), 
-                                 size=(self.output_height, self.output_width), 
-                                 mode='bilinear', align_corners=False).squeeze(1)
+        x = F.elu(self.fc1(x))
+        x = self.drop_fc(x)
+        x = self.fc_out(x)  # 输出形状: [batch_size, 88]
         
-        return output
-    
-    def predict_iv_surface(self, params_numpy):
-        """
-        实用方法: 从numpy参数输入预测IV曲面
-        Args:
-            params_numpy: numpy数组, 形状为 (4,) 或 (batch, 4)
-        Returns:
-            numpy数组, IV曲面形状为 (8, 11) 或 (batch, 8, 11)
-        """
-        self.eval()
-        with torch.no_grad():
-            if params_numpy.ndim == 1:
-                params_numpy = params_numpy.reshape(1, -1)
-            
-            params_tensor = torch.FloatTensor(params_numpy)
-            output = self.forward(params_tensor)
-            return output.numpy()
+        return x
         
 
