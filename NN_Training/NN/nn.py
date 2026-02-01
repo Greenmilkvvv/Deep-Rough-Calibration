@@ -783,7 +783,7 @@ class GatedBlock(nn.Module):
         self.projection = nn.Linear(input_dim, output_dim)
         # 门控变换
         self.gate = nn.Linear(input_dim, output_dim)
-        # 可选的残差连接（如果维度匹配）
+        # 可选的残差连接 (如果维度匹配) 
         self.use_residual = (input_dim == output_dim)
 
     def forward(self, x):
@@ -796,8 +796,8 @@ class GatedBlock(nn.Module):
 
 class NN_pricing_GLU(nn.Module):
     """
-    基于门控线性单元(GLU)的定价网络。
-    保留了MLP的全局连接性, 但通过门控机制增强了表达能力。
+    基于门控线性单元(GLU)的定价网络. 
+    保留了MLP的全局连接性, 但通过门控机制增强了表达能力. 
     """
     def __init__(self, hyperparams):
         super().__init__()
@@ -830,4 +830,174 @@ class NN_pricing_GLU(nn.Module):
                 x = self.norms[i](x)
         x = self.output_layer(x)
         return x
+
+
+# %%
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class NN_pricing_MoE(nn.Module):
+    """
+    基于混合专家 (Mixture of Experts) 的粗糙波动率定价器. 
+    核心思想：让不同的专家子网络专精于参数空间的不同区域 (如高/低Hurst指数区) , 
+    并通过一个门控网络动态组合, 以提升表达能力和潜在的可解释性. 
+    """
+    def __init__(self, hyperparams):
+        """
+        hyperparams = {
+            'input_dim': 4,             # 模型参数 (H, eta, rho, v0)
+            'output_dim': 88,           # 隐含波动率曲面
+            'num_experts': 4,           # 专家数量. 建议从4开始, 与输入维度数一致, 易于分析. 
+            'expert_hidden_dim': 32,    # 每个专家的隐藏层维度
+            'expert_hidden_layers': 2,  # 每个专家的隐藏层数量
+            'gate_hidden_dim': 16,      # 门控网络的隐藏层维度
+            'use_noisy_gating': False,  # 是否在门控网络中引入噪声以鼓励负载均衡
+            'k': 2,                     # 稀疏性参数: 前k个专家参与计算. k=1时退化为硬切换. 
+        }
+        """
+        super().__init__()
+
+        # 解析超参数
+        self.input_dim = hyperparams['input_dim']
+        self.output_dim = hyperparams['output_dim']
+        self.num_experts = hyperparams['num_experts']
+        self.expert_hidden_dim = hyperparams.get('expert_hidden_dim', 32)
+        self.expert_hidden_layers = hyperparams.get('expert_hidden_layers', 2)
+        self.gate_hidden_dim = hyperparams.get('gate_hidden_dim', 16)
+        self.use_noisy_gating = hyperparams.get('use_noisy_gating', False)
+        self.k = min(hyperparams.get('k', 2), self.num_experts)  # 确保k不大于专家数
+
+        # --- 1. 专家网络池 (每个专家是一个独立的小型MLP) ---
+        self.experts = nn.ModuleList()
+        for _ in range(self.num_experts):
+            expert = self._build_expert()
+            self.experts.append(expert)
+
+        # --- 2. 门控网络 (决定如何组合专家) ---
+        gate_layers = [nn.Linear(self.input_dim, self.gate_hidden_dim), nn.ReLU()]
+        gate_layers.append(nn.Linear(self.gate_hidden_dim, self.num_experts))
+        self.gate_network = nn.Sequential(*gate_layers)
+
+        # 如果使用带噪声的门控以鼓励负载均衡 (可选的训练技巧)
+        if self.use_noisy_gating:
+            self.w_noise = nn.Parameter(torch.zeros(self.input_dim, self.num_experts))
+
+        # --- 3. 可选的共享基础层 (可帮助专家专注于差异部分) ---
+        # 这不是标准MoE的一部分, 但可能有益：一个共享的底层变换, 所有专家在其基础上工作. 
+        self.shared_bottom = None
+        use_shared_bottom = hyperparams.get('use_shared_bottom', False)
+        if use_shared_bottom:
+            self.shared_bottom = nn.Sequential(
+                nn.Linear(self.input_dim, self.expert_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(self.expert_hidden_dim, self.expert_hidden_dim)
+            )
+
+        # 用于跟踪门控统计信息, 便于可解释性分析
+        self.gate_scores_history = []
+        self.expert_load_history = []
+
+    def _build_expert(self):
+        """构建一个专家网络 (一个小的MLP). """
+        layers = []
+        input_size = self.expert_hidden_dim if self.shared_bottom else self.input_dim
+        # 专家网络的隐藏层
+        for _ in range(self.expert_hidden_layers):
+            layers.extend([
+                nn.Linear(input_size, self.expert_hidden_dim),
+                nn.ReLU()
+            ])
+            input_size = self.expert_hidden_dim
+        # 输出层：每个专家直接输出整个波动率曲面
+        layers.append(nn.Linear(self.expert_hidden_dim, self.output_dim))
+        return nn.Sequential(*layers)
+
+    def _noisy_top_k_gating(self, x, train=True):
+        """计算稀疏的门控权重, 只激活top-k个专家. """
+        clean_logits = self.gate_network(x)  # [batch_size, num_experts]
+
+        if self.use_noisy_gating and train:
+            # 添加可调控的噪声, 鼓励探索和负载均衡
+            noise = torch.randn_like(clean_logits) * F.softplus(torch.matmul(x, self.w_noise))
+            noisy_logits = clean_logits + noise
+        else:
+            noisy_logits = clean_logits
+
+        # 只保留 top-k 个专家的权重, 其余置为负无穷 (softmax后为0) 
+        top_k_logits, top_k_indices = noisy_logits.topk(self.k, dim=-1)
+        zeros = torch.full_like(noisy_logits, float('-inf'))
+        sparse_logits = zeros.scatter(dim=-1, index=top_k_indices, src=top_k_logits)
+
+        # 计算稀疏的、归一化的门控权重
+        gate_scores = F.softmax(sparse_logits, dim=-1)  # [batch_size, num_experts]
+
+        return gate_scores, top_k_indices, clean_logits
+
+    def forward(self, x, return_gates=False):
+        """
+        前向传播. 
+        Args:
+            x: 输入参数, 形状 [batch_size, input_dim]
+            return_gates: 是否返回门控权重等内部信息, 用于可解释性分析. 
+        Returns:
+            预测的隐含波动率曲面 [batch_size, output_dim]
+            如果 return_gates=True, 同时返回 (gate_scores, top_k_indices)
+        """
+        batch_size = x.shape[0]
+
+        # 1. 计算稀疏门控权重
+        gate_scores, top_k_indices, raw_logits = self._noisy_top_k_gating(x, self.training)
+
+        # 2. 准备专家网络的输入
+        if self.shared_bottom:
+            expert_input = self.shared_bottom(x)  # 共享基础表示
+            # 需要将输入广播, 以便每个专家独立处理
+            expert_input = expert_input.unsqueeze(1).expand(-1, self.num_experts, -1) # [batch, num_experts, expert_hidden_dim]
+        else:
+            expert_input = x.unsqueeze(1).expand(-1, self.num_experts, -1) # [batch, num_experts, input_dim]
+
+        # 3. 计算所有专家的输出 (这里会计算所有专家, 后续会通过门控权重屏蔽)
+        # 更高效的做法是只计算被选中的专家, 但为了代码清晰和可解释性, 这里计算全部. 
+        expert_outputs = []
+        for i, expert in enumerate(self.experts):
+            # 选取第i个专家的输入
+            single_expert_input = expert_input[:, i, :]
+            output = expert(single_expert_input)  # [batch_size, output_dim]
+            expert_outputs.append(output)
+        expert_outputs = torch.stack(expert_outputs, dim=1)  # [batch_size, num_experts, output_dim]
+
+        # 4. 根据门控权重加权组合专家输出
+        # 利用门控权重进行加权求和
+        gate_scores_expanded = gate_scores.unsqueeze(-1)  # [batch_size, num_experts, 1]
+        final_output = (expert_outputs * gate_scores_expanded).sum(dim=1)  # [batch_size, output_dim]
+
+        # 5. (训练时) 记录门控信息用于分析和负载均衡损失计算
+        if self.training:
+            self._update_gate_history(gate_scores, top_k_indices)
+
+        if return_gates:
+            return final_output, (gate_scores, top_k_indices, raw_logits, expert_outputs)
+        return final_output
+
+    def _update_gate_history(self, gate_scores, indices):
+        """简单记录门控信息. 在实际训练中, 可用于计算负载均衡损失. """
+        # 记录每个样本选择的主要专家
+        self.gate_scores_history.append(gate_scores.detach().cpu())
+        # 计算每个专家被选中的频率 (作为top-1) 
+        top_expert = indices[:, 0]  # 取每个样本权重最高的专家索引
+        expert_load = torch.bincount(top_expert, minlength=self.num_experts).float() / len(top_expert)
+        self.expert_load_history.append(expert_load)
+
+    def get_expert_load(self):
+        """获取当前批次中各个专家的负载 (被选为top-1的比例) . """
+        if self.expert_load_history:
+            return torch.stack(self.expert_load_history).mean(dim=0)
+        return None
+
+    def reset_gate_history(self):
+        """重置记录的门控历史. 在每个epoch开始时调用. """
+        self.gate_scores_history = []
+        self.expert_load_history = []
+
 
