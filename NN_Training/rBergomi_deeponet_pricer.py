@@ -3,7 +3,7 @@ from ast import mod
 import os
 
 import gzip
-import pandas as pd
+# import pandas as pd
 import numpy as np
 
 import matplotlib.pyplot as plt
@@ -121,25 +121,30 @@ data_loader = torch.utils.data.DataLoader(
 import sys
 sys.path.append(r"../") 
 
-from NN_Training.NN.nn import NN_pricing_CNN
+from NN_Training.NN.nn import NN_pricing_DeepONet
 
 from NN_Training.NN.training import train_model
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-hyperparams = { 
-    "input_dim": 4, 
-    'init_channels': 32, 
-    'dense_units': 128, 
-    'dropout_rates': [0.25, 0.25, 0.4, 0.3], 
-    'conv_kernel_size': 3, 
-    'pool_kernel_size': 2
+hyperparams = {
+    'param_dim': 4,       # 你的4个参数
+    'coord_dim': 2,       # T 和 K
+    'branch_width': 64,   # 分支网络宽度
+    'branch_depth': 3,    # 分支网络深度（与你的MLP隐藏层数一致）
+    'trunk_width': 64,    # 主干网络宽度
+    'trunk_depth': 3,     # 主干网络深度
+    'latent_dim': 32,     # 特征向量维度（不宜过大，是关键超参数）
+    'num_points': 88,     # 你的输出维度
+    'use_bias': True,     # 推荐使用
+    'activation': 'elu',  # 与你的MLP保持一致
+    'enable_output_mlp': False  # 初始阶段建议关闭，保持经典结构
 }
 
-# NN_pricing_CNN
-## 加入残差网络改进的模型
-model = NN_pricing_CNN(hyperparams).to(device=device, dtype=torch.float64)
+# NN_pricing_DeepONet
+## 深度算子网络
+model = NN_pricing_DeepONet(hyperparams).to(device=device, dtype=torch.float64)
 
 loss_MSE = nn.MSELoss()
 optim_Adam = torch.optim.Adam(model.parameters(), lr=0.0001)
@@ -157,7 +162,10 @@ tain_loss_lst, test_loss_lst = train_model(
 print(f"训练集损失: {tain_loss_lst[-1]}")
 print(f"测试集损失: {test_loss_lst[-1]}")
 
-torch.save(model.state_dict(), r"../Data/Models/nn_cnn_rBergomi.pth")
+torch.save(model.state_dict(), r"../Data/Models/nn_deeponet_rBergomi.pth")
 
 print("模型已保存")
 
+
+
+# %%

@@ -609,3 +609,163 @@ class NN_pricing_CNN(nn.Module):
         return x
         
 
+# %%
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class NN_pricing_DeepONet(nn.Module):
+    """
+    基于DeepONet架构的粗糙波动率模型定价器. 
+    
+    输入: 
+        - params: 模型参数 [batch_size, param_dim] (例如 [batch, 4])
+        - coords: 曲面坐标 [batch_size, num_points, coord_dim] (例如 [batch, 88, 2])
+    输出: 
+        - 隐含波动率曲面 [batch_size, num_points] (例如 [batch, 88])
+    """
+    def __init__(self, hyperparams):
+        """
+        hyperparams = {
+            'param_dim': 4,             # 模型参数维度 (H, η, rho, v0)
+            'coord_dim': 2,             # 坐标维度 (T, K)
+            'branch_width': 64,         # 分支网络隐藏层宽度
+            'branch_depth': 3,          # 分支网络深度 (隐藏层层数 )
+            'trunk_width': 64,          # 主干网络隐藏层宽度  
+            'trunk_depth': 3,           # 主干网络深度
+            'latent_dim': 32,           # 特征向量的最终维度 (b和t的维度 )
+            'num_points': 88,           # 输出曲面的点数 (固定网格 )
+            'use_bias': True,           # 是否在合并后添加可学习的偏置
+            'activation': 'elu'         # 激活函数类型 ('relu', 'elu', 'tanh')
+        }
+        """
+        super().__init__()
+        
+        # 解析超参数
+        self.param_dim = hyperparams.get('param_dim', 4)
+        self.coord_dim = hyperparams.get('coord_dim', 2)
+        self.branch_width = hyperparams.get('branch_width', 64)
+        self.branch_depth = hyperparams.get('branch_depth', 3)
+        self.trunk_width = hyperparams.get('trunk_width', 64)
+        self.trunk_depth = hyperparams.get('trunk_depth', 3)
+        self.latent_dim = hyperparams.get('latent_dim', 32)
+        self.num_points = hyperparams.get('num_points', 88)
+        self.use_bias = hyperparams.get('use_bias', True)
+        act_name = hyperparams.get('activation', 'elu')
+        
+        # 激活函数选择
+        activation_dict = {
+            'relu': nn.ReLU(),
+            'elu': nn.ELU(),
+            'tanh': nn.Tanh(),
+            'leaky_relu': nn.LeakyReLU(0.01)
+        }
+        self.activation = activation_dict.get(act_name, nn.ELU())
+        
+        # --- 1. 分支网络: 处理模型参数 ---
+        branch_layers = []
+        in_dim = self.param_dim
+        # 构建隐藏层
+        for i in range(self.branch_depth):
+            branch_layers.append(nn.Linear(in_dim, self.branch_width))
+            branch_layers.append(nn.BatchNorm1d(self.branch_width))
+            branch_layers.append(self.activation)
+            if i < self.branch_depth - 1:  # 除最后一层外, 可添加Dropout
+                branch_layers.append(nn.Dropout(0.1))
+            in_dim = self.branch_width
+        # 输出层: 投影到潜空间维度
+        branch_layers.append(nn.Linear(self.branch_width, self.latent_dim))
+        self.branch_net = nn.Sequential(*branch_layers)
+        
+        # --- 2. 主干网络: 处理坐标点 ---
+        trunk_layers = []
+        in_dim = self.coord_dim
+        # 构建隐藏层
+        for i in range(self.trunk_depth):
+            trunk_layers.append(nn.Linear(in_dim, self.trunk_width))
+            trunk_layers.append(nn.BatchNorm1d(self.trunk_width))
+            trunk_layers.append(self.activation)
+            if i < self.trunk_depth - 1:
+                trunk_layers.append(nn.Dropout(0.1))
+            in_dim = self.trunk_width
+        # 输出层: 投影到潜空间维度
+        trunk_layers.append(nn.Linear(self.trunk_width, self.latent_dim))
+        self.trunk_net = nn.Sequential(*trunk_layers)
+        
+        # --- 3. 可学习的偏置项 (每个输出点一个偏置 )---
+        if self.use_bias:
+            self.bias = nn.Parameter(torch.zeros(self.num_points))
+        else:
+            self.bias = None
+            
+        # --- 4. 可选的输出调整层 (轻量MLP, 用于后处理 )---
+        # 如果希望合并后的特征再经过非线性变换, 可以启用此层
+        self.enable_output_mlp = hyperparams.get('enable_output_mlp', False)
+        if self.enable_output_mlp:
+            self.output_mlp = nn.Sequential(
+                nn.Linear(1, 8),  # 输入是合并后的标量, 先提升维度
+                self.activation,
+                nn.Linear(8, 1)   # 再降回1维
+            )
+        else:
+            self.output_mlp = None
+
+    def forward(self, params, coords):
+        """
+        前向传播. 
+        
+        Args:
+            params: 模型参数张量 [batch_size, param_dim]
+            coords: 坐标张量 [batch_size, num_points, coord_dim]
+            
+        Returns:
+            隐含波动率曲面 [batch_size, num_points]
+        """
+        batch_size = params.shape[0]
+        num_points = coords.shape[1]  # 通常是88, 但网络可以处理任意点数
+        
+        # 1. 分支网络: 编码参数 -> [batch, latent_dim]
+        branch_out = self.branch_net(params)  # [batch, latent_dim]
+        
+        # 2. 主干网络: 编码每个坐标点
+        # 重塑坐标以便批处理: [batch, num_points, coord_dim] -> [batch*num_points, coord_dim]
+        coords_reshaped = coords.view(-1, self.coord_dim)
+        trunk_out = self.trunk_net(coords_reshaped)  # [batch*num_points, latent_dim]
+        # 恢复形状: [batch, num_points, latent_dim]
+        trunk_out = trunk_out.view(batch_size, num_points, self.latent_dim)
+        
+        # 3. 合并操作: 点积求和 (经典DeepONet方式)
+        # branch_out: [batch, latent_dim] -> 扩展为 [batch, 1, latent_dim]
+        # trunk_out: [batch, num_points, latent_dim]
+        # 结果: [batch, num_points]
+        output = torch.einsum('bd,bpd->bp', branch_out, trunk_out)
+        
+        # 4. 可选: 通过轻量MLP调整每个点的输出
+        if self.output_mlp is not None:
+            # 将输出视为独立标量进行处理
+            output = output.unsqueeze(-1)  # [batch, num_points, 1]
+            output = self.output_mlp(output)  # [batch, num_points, 1]
+            output = output.squeeze(-1)  # [batch, num_points]
+        
+        # 5. 添加可学习的偏置 (每个网格点一个 )
+        if self.bias is not None:
+            # bias: [num_points] 自动广播到 [batch, num_points]
+            output = output + self.bias
+        
+        return output
+
+    def predict_at_new_coords(self, params, new_coords):
+        """
+        在训练好的模型上预测新坐标点的值. 
+        这展示了DeepONet的灵活性: 可以评估任意点, 而不仅是训练时的固定网格. 
+        
+        Args:
+            params: [batch_size, param_dim]
+            new_coords: [batch_size, arbitrary_num_points, coord_dim]
+            
+        Returns:
+            [batch_size, arbitrary_num_points]
+        """
+        return self.forward(params, new_coords)
+    
+
